@@ -14,20 +14,22 @@ from torch.optim import lr_scheduler
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
+from data import ImageDataset
+from tqdm import tqdm
 
 from arch_unet import UNet
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--noisetype", type=str, default="gauss25")
-parser.add_argument('--data_dir', type=str, default='./Imagenet_val')
-parser.add_argument('--val_dirs', type=str, default='./validation')
+parser.add_argument('--data_dir', type=str, default='dataset/train')
+parser.add_argument('--val_dirs', type=str, default='dataset/train')
 parser.add_argument('--save_model_path', type=str, default='./results')
-parser.add_argument('--log_name', type=str, default='unet_gauss25_b4e100r02')
+parser.add_argument('--log_name', type=str, default='unet_n2n')
 parser.add_argument('--gpu_devices', default='0', type=str)
-parser.add_argument('--parallel', action='store_true')
-parser.add_argument('--n_feature', type=int, default=48)
-parser.add_argument('--n_channel', type=int, default=3)
-parser.add_argument('--lr', type=float, default=3e-4)
+parser.add_argument('--parallel', action='store_true', default=False)
+parser.add_argument('--n_feature', type=int, default=96)
+parser.add_argument('--n_channel', type=int, default=1)
+parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--gamma', type=float, default=0.5)
 parser.add_argument('--n_epoch', type=int, default=100)
 parser.add_argument('--n_snapshot', type=int, default=1)
@@ -220,41 +222,6 @@ class DataLoader_Imagenet_val(Dataset):
     def __len__(self):
         return len(self.train_fns)
 
-
-def validation_kodak(dataset_dir):
-    fns = glob.glob(os.path.join(dataset_dir, "*"))
-    fns.sort()
-    images = []
-    for fn in fns:
-        im = Image.open(fn)
-        im = np.array(im, dtype=np.float32)
-        images.append(im)
-    return images
-
-
-def validation_bsd300(dataset_dir):
-    fns = []
-    fns.extend(glob.glob(os.path.join(dataset_dir, "test", "*")))
-    fns.sort()
-    images = []
-    for fn in fns:
-        im = Image.open(fn)
-        im = np.array(im, dtype=np.float32)
-        images.append(im)
-    return images
-
-
-def validation_Set14(dataset_dir):
-    fns = glob.glob(os.path.join(dataset_dir, "*"))
-    fns.sort()
-    images = []
-    for fn in fns:
-        im = Image.open(fn)
-        im = np.array(im, dtype=np.float32)
-        images.append(im)
-    return images
-
-
 def ssim(prediction, target):
     C1 = (0.01 * 255)**2
     C2 = (0.03 * 255)**2
@@ -309,31 +276,22 @@ def calculate_psnr(target, ref):
 
 
 # Training Set
-TrainingDataset = DataLoader_Imagenet_val(opt.data_dir, patch=opt.patchsize)
-TrainingLoader = DataLoader(dataset=TrainingDataset,
+traindataset = ImageDataset(opt.data_dir)
+train_loader = DataLoader(dataset=traindataset,
                             num_workers=8,
                             batch_size=opt.batchsize,
                             shuffle=True,
                             pin_memory=False,
                             drop_last=True)
 
-# Validation Set
-Kodak_dir = os.path.join(opt.val_dirs, "Kodak")
-BSD300_dir = os.path.join(opt.val_dirs, "BSD300")
-Set14_dir = os.path.join(opt.val_dirs, "Set14")
-valid_dict = {
-    "Kodak": validation_kodak(Kodak_dir),
-    "BSD300": validation_bsd300(BSD300_dir),
-    "Set14": validation_Set14(Set14_dir)
-}
-
-# Noise adder
-noise_adder = AugmentNoise(style=opt.noisetype)
-
 # Network
 network = UNet(in_nc=opt.n_channel,
                out_nc=opt.n_channel,
-               n_feature=opt.n_feature)
+               n_feature=opt.n_feature, blindspot=True)
+
+ckpt = torch.load('results/unet_n2n/2024-05-23-13-47/epoch_model_002.pth')
+network.load_state_dict(ckpt)
+
 if opt.parallel:
     network = torch.nn.DataParallel(network)
 network = network.cuda()
@@ -363,121 +321,58 @@ for epoch in range(1, opt.n_epoch + 1):
     print("LearningRate of Epoch {} = {}".format(epoch, current_lr))
 
     network.train()
-    for iteration, clean in enumerate(TrainingLoader):
+
+    losses = []
+
+    psnr_result = []
+
+    progress = tqdm(enumerate(train_loader), total=len(train_loader))
+    for iteration, noisy in progress:
         st = time.time()
-        clean = clean / 255.0
-        clean = clean.cuda()
-        noisy = noise_adder.add_train_noise(clean)
+        noisy = noisy.cuda()
 
-        optimizer.zero_grad()
+        optimizer.zero_grad()  # Zero the gradients
 
-        mask1, mask2 = generate_mask_pair(noisy)
-        noisy_sub1 = generate_subimages(noisy, mask1)
+        mask1, mask2 = generate_mask_pair(noisy)  # Generate the mask pair
+        noisy_sub1 = generate_subimages(noisy, mask1)  
         noisy_sub2 = generate_subimages(noisy, mask2)
+
         with torch.no_grad():
-            noisy_denoised = network(noisy)
-        noisy_sub1_denoised = generate_subimages(noisy_denoised, mask1)
-        noisy_sub2_denoised = generate_subimages(noisy_denoised, mask2)
+            noisy_denoised = network(noisy)  
+
+        noisy_denoised_sub1 = generate_subimages(noisy_denoised, mask1)
+        noisy_denoised_sub2 = generate_subimages(noisy_denoised, mask2)
 
         noisy_output = network(noisy_sub1)
         noisy_target = noisy_sub2
-        Lambda = epoch / opt.n_epoch * opt.increase_ratio
+
+        Lambda = epoch/opt.n_epoch * 2
         diff = noisy_output - noisy_target
-        exp_diff = noisy_sub1_denoised - noisy_sub2_denoised
+        exp_diff = noisy_denoised_sub1 - noisy_denoised_sub2
 
         loss1 = torch.mean(diff**2)
         loss2 = Lambda * torch.mean((diff - exp_diff)**2)
-        loss_all = opt.Lambda1 * loss1 + opt.Lambda2 * loss2
+
+        loss_all = loss1 + loss2
 
         loss_all.backward()
-        optimizer.step()
-        print(
-            '{:04d} {:05d} Loss1={:.6f}, Lambda={}, Loss2={:.6f}, Loss_Full={:.6f}, Time={:.4f}'
-            .format(epoch, iteration, np.mean(loss1.item()), Lambda,
-                    np.mean(loss2.item()), np.mean(loss_all.item()),
-                    time.time() - st))
 
+        current_psnr = calculate_psnr(noisy_output.cpu().detach().numpy(), noisy_target.cpu().detach().numpy())
+        psnr_result.append(current_psnr)
+
+        optimizer.step()
+        losses.append(loss_all.item())
+        progress.set_description('Lambda={}, Loss_Full={:.7f}, Loss Avg={:.7f}, Cur_PSNR={:.3f}, Avg_PSNR={:.3}, Time={:.4f}'
+            .format(Lambda,
+                    np.mean(loss_all.item()),
+                    np.mean(losses),
+                    current_psnr,
+                    np.mean(psnr_result),
+                    time.time() - st))
+        
     scheduler.step()
 
-    if epoch % opt.n_snapshot == 0 or epoch == opt.n_epoch:
+    if epoch % 1 == 0 or epoch == opt.n_epoch:
         network.eval()
         # save checkpoint
         checkpoint(network, epoch, "model")
-        # validation
-        save_model_path = os.path.join(opt.save_model_path, opt.log_name,
-                                       systime)
-        validation_path = os.path.join(save_model_path, "validation")
-        os.makedirs(validation_path, exist_ok=True)
-        np.random.seed(101)
-        valid_repeat_times = {"Kodak": 10, "BSD300": 3, "Set14": 20}
-
-        for valid_name, valid_images in valid_dict.items():
-            psnr_result = []
-            ssim_result = []
-            repeat_times = valid_repeat_times[valid_name]
-            for i in range(repeat_times):
-                for idx, im in enumerate(valid_images):
-                    origin255 = im.copy()
-                    origin255 = origin255.astype(np.uint8)
-                    im = np.array(im, dtype=np.float32) / 255.0
-                    noisy_im = noise_adder.add_valid_noise(im)
-                    if epoch == opt.n_snapshot:
-                        noisy255 = noisy_im.copy()
-                        noisy255 = np.clip(noisy255 * 255.0 + 0.5, 0,
-                                           255).astype(np.uint8)
-                    # padding to square
-                    H = noisy_im.shape[0]
-                    W = noisy_im.shape[1]
-                    val_size = (max(H, W) + 31) // 32 * 32
-                    noisy_im = np.pad(
-                        noisy_im,
-                        [[0, val_size - H], [0, val_size - W], [0, 0]],
-                        'reflect')
-                    transformer = transforms.Compose([transforms.ToTensor()])
-                    noisy_im = transformer(noisy_im)
-                    noisy_im = torch.unsqueeze(noisy_im, 0)
-                    noisy_im = noisy_im.cuda()
-                    with torch.no_grad():
-                        prediction = network(noisy_im)
-                        prediction = prediction[:, :, :H, :W]
-                    prediction = prediction.permute(0, 2, 3, 1)
-                    prediction = prediction.cpu().data.clamp(0, 1).numpy()
-                    prediction = prediction.squeeze()
-                    pred255 = np.clip(prediction * 255.0 + 0.5, 0,
-                                      255).astype(np.uint8)
-                    # calculate psnr
-                    cur_psnr = calculate_psnr(origin255.astype(np.float32),
-                                              pred255.astype(np.float32))
-                    psnr_result.append(cur_psnr)
-                    cur_ssim = calculate_ssim(origin255.astype(np.float32),
-                                              pred255.astype(np.float32))
-                    ssim_result.append(cur_ssim)
-
-                    # visualization
-                    if i == 0 and epoch == opt.n_snapshot:
-                        save_path = os.path.join(
-                            validation_path,
-                            "{}_{:03d}-{:03d}_clean.png".format(
-                                valid_name, idx, epoch))
-                        Image.fromarray(origin255).convert('RGB').save(
-                            save_path)
-                        save_path = os.path.join(
-                            validation_path,
-                            "{}_{:03d}-{:03d}_noisy.png".format(
-                                valid_name, idx, epoch))
-                        Image.fromarray(noisy255).convert('RGB').save(
-                            save_path)
-                    if i == 0:
-                        save_path = os.path.join(
-                            validation_path,
-                            "{}_{:03d}-{:03d}_denoised.png".format(
-                                valid_name, idx, epoch))
-                        Image.fromarray(pred255).convert('RGB').save(save_path)
-
-            psnr_result = np.array(psnr_result)
-            avg_psnr = np.mean(psnr_result)
-            avg_ssim = np.mean(ssim_result)
-            log_path = os.path.join(validation_path,
-                                    "A_log_{}.csv".format(valid_name))
-            with open(log_path, "a") as f:
-                f.writelines("{},{},{}\n".format(epoch, avg_psnr, avg_ssim))
