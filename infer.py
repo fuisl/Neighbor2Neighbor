@@ -32,6 +32,7 @@ train_loader = DataLoader(dataset=train_dataset,
                           drop_last=False)
 
 # inference loop
+output_base = 'results/unet_n2n/2024-05-23-14-13/infer'
 monitor = tqdm(train_loader, total=len(train_loader), desc='Infer')
 with torch.no_grad():
     for image, path in monitor:
@@ -40,8 +41,10 @@ with torch.no_grad():
 
         # compute save path
         rel_path = os.path.relpath(path[0], 'dataset/train')
-        out_path = os.path.join('results/unet_n2n/2024-05-23-14-13/infer', rel_path)
+        out_path = os.path.join(output_base, rel_path)
+
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
         # save image with the new path
-        save_image(out, 'results/unet_n2n/2024-05-23-14-13/infer/' + os.path.basename(path[0]), format='jpg')
+        save_image(out, out_path, format='JPEG')
+        monitor.set_description(f"Processing {os.path.basename(path[0])}")
