@@ -5,6 +5,7 @@ import glob
 import datetime
 import argparse
 import numpy as np
+import logging
 
 import cv2
 from PIL import Image
@@ -42,7 +43,7 @@ parser.add_argument("--increase_ratio", type=float, default=2.0)
 opt, _ = parser.parse_known_args()
 systime = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
 operation_seed_counter = 0
-os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_devices
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 
 def checkpoint(net, epoch, name):
@@ -289,7 +290,7 @@ network = UNet(in_nc=opt.n_channel,
                out_nc=opt.n_channel,
                n_feature=opt.n_feature, blindspot=True)
 
-ckpt = torch.load('results/unet_n2n/2024-05-23-13-47/epoch_model_002.pth')
+ckpt = torch.load('results/unet_n2n/2024-05-28-16-50/epoch_model_001.pth')
 network.load_state_dict(ckpt)
 
 if opt.parallel:
@@ -308,10 +309,16 @@ scheduler = lr_scheduler.MultiStepLR(optimizer,
                                          int(80 * ratio) - 1
                                      ],
                                      gamma=opt.gamma)
+
+Lambda1 = 1
+Lambda2 = 8
+
 print("Batchsize={}, number of epoch={}".format(opt.batchsize, opt.n_epoch))
 
 checkpoint(network, 0, "model")
 print('init finish')
+
+logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[logging.FileHandler(os.path.join(opt.save_model_path, opt.log_name, systime, 'train.log'), 'w'), logging.StreamHandler()])
 
 for epoch in range(1, opt.n_epoch + 1):
     cnt = 0
@@ -353,21 +360,19 @@ for epoch in range(1, opt.n_epoch + 1):
         loss1 = torch.mean(diff**2)
         loss2 = Lambda * torch.mean((diff - exp_diff)**2)
 
-        loss_all = loss1 + loss2
+        loss_all = Lambda1 * loss1 + Lambda2 * loss2
 
         loss_all.backward()
 
-        current_psnr = calculate_psnr(noisy_output.cpu().detach().numpy(), noisy_target.cpu().detach().numpy())
-        psnr_result.append(current_psnr)
+        # current_psnr = calculate_psnr(noisy_output.cpu().detach().numpy(), noisy_target.cpu().detach().numpy())
+        # psnr_result.append(current_psnr)
 
         optimizer.step()
         losses.append(loss_all.item())
-        progress.set_description('Lambda={}, Loss_Full={:.7f}, Loss Avg={:.7f}, Cur_PSNR={:.3f}, Avg_PSNR={:.3}, Time={:.4f}'
+        progress.set_description('Lambda={}, Loss_Full={:.7f}, Loss Avg={:.7f}, Time={:.4f}'
             .format(Lambda,
                     np.mean(loss_all.item()),
                     np.mean(losses),
-                    current_psnr,
-                    np.mean(psnr_result),
                     time.time() - st))
         
     scheduler.step()
@@ -376,3 +381,5 @@ for epoch in range(1, opt.n_epoch + 1):
         network.eval()
         # save checkpoint
         checkpoint(network, epoch, "model")
+
+    logging.info('Epoch={}, Loss={:.7f}'.format(epoch, np.mean(losses)))

@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-
+import pytorch_lightning as pl
+from utils import *
+from torch import optim
+from torch.optim import lr_scheduler
 
 def initialize_weights(net_l, scale=1):
     if not isinstance(net_l, list):
@@ -241,7 +244,86 @@ class UNet(nn.Module):
             x = conv_func(x, self.nin_c, blindspot)
         return x
 
+class N2NTrainer(pl.LightningModule):
+    def __init__(self, lr, *args: torch.Any, **kwargs: torch.Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.save_hyperparameters()
 
+        self.model = UNet(1, 1, 96, blindspot=True)
+        self.Lambda1 = 1
+        self.Lambda2 = 8
+    
+    def forward(self, X):
+        return super().forward(X)
+
+    def training_step(self, batch, batch_idx):
+        noisy = batch
+
+        mask1, mask2 = generate_mask_pair(noisy)  # Generate the mask pair
+        noisy_sub1 = generate_subimages(noisy, mask1)  
+        noisy_sub2 = generate_subimages(noisy, mask2)
+
+        with torch.no_grad():
+            noisy_denoised = self.model(noisy)  
+
+        noisy_denoised_sub1 = generate_subimages(noisy_denoised, mask1)
+        noisy_denoised_sub2 = generate_subimages(noisy_denoised, mask2)
+
+        noisy_output = self.model(noisy_sub1)
+        noisy_target = noisy_sub2
+
+        Lambda = 0.002
+        diff = noisy_output - noisy_target
+        exp_diff = noisy_denoised_sub1 - noisy_denoised_sub2
+
+        loss1 = torch.mean(diff**2)
+        loss2 = Lambda * torch.mean((diff - exp_diff)**2)
+
+        loss_all = self.Lambda1 * loss1 + self.Lambda2 * loss2
+
+        self.log('train_loss', loss_all, on_epoch=True, on_step=True, prog_bar=True)
+        self.log('train_loss1', loss1,  on_epoch=True, on_step=True, prog_bar=True)
+        self.log('train_loss2', loss2, on_epoch=True, on_step=True, prog_bar=True)
+
+        return loss_all
+    
+    def validation_step(self, batch, batch_idx):
+        noisy = batch
+
+        mask1, mask2 = generate_mask_pair(noisy)  # Generate the mask pair
+        noisy_sub1 = generate_subimages(noisy, mask1)
+        noisy_sub2 = generate_subimages(noisy, mask2)
+
+        with torch.no_grad():
+            noisy_denoised = self.model(noisy)
+
+        noisy_denoised_sub1 = generate_subimages(noisy_denoised, mask1)
+        noisy_denoised_sub2 = generate_subimages(noisy_denoised, mask2)
+
+        noisy_output = self.model(noisy_sub1)
+        noisy_target = noisy_sub2
+
+        Lambda = 0.002
+        diff = noisy_output - noisy_target
+        exp_diff = noisy_denoised_sub1 - noisy_denoised_sub2
+
+        loss1 = torch.mean(diff**2)
+        loss2 = Lambda * torch.mean((diff - exp_diff)**2)
+
+        loss_all = self.Lambda1 * loss1 + self.Lambda2 * loss2
+
+        self.log('val_loss', loss_all, on_epoch=True, on_step=True, prog_bar=True)
+        self.log('val_loss1', loss1,  on_epoch=True, on_step=True, prog_bar=True)
+        self.log('val_loss2', loss2, on_epoch=True, on_step=True, prog_bar=True)
+
+        return loss_all
+
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.parameters(), lr=self.hparams.lr)
+        scheduler = lr_scheduler.LambdaLR(optimizer, lambda epoch: 0.1 ** (epoch // 20))
+        return [optimizer], [scheduler]
+
+    
 if __name__ == "__main__":
     import numpy as np
     x = torch.from_numpy(np.zeros((10, 3, 32, 32), dtype=np.float32))
