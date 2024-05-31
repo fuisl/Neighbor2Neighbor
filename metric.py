@@ -83,11 +83,52 @@ class EP(Metric):
         self.rois = []
 
 class TP(Metric):
-    def __init__(self, img):
-        self.img = img
+    def __init__(self, img_in, img_den):
+        self.img_in = img_in
+        self.img_den = img_den
         self.rois = []
 
-img = cv2.imread("./inference_from_N2N_25_5_24.jpg")
+    def cal(self):
+        """Choose the ROI and calculate the TP."""
 
-cnr = CNR(img)
-cnr.cal()
+        while True:
+            roi = cv2.selectROI('Select ROI', self.img_den, showCrosshair=False, printNotice=False)
+            x, y, w, h = roi
+
+            roi_in = self.img_in[y:y+h, x:x+w]
+            roi_den = self.img_den[y:y+h, x:x+w]
+
+            self.rois.append((roi_in, roi_den))
+            tp = self.calculateTP(roi_in, roi_den)
+            cv2.rectangle(self.img_den, (x, y), (x+w, y+h), (0, 255, 0), 1)
+            cv2.putText(self.img_den, f'{tp:.2f}', (x, y), cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 255, 0), 1)
+
+            if cv2.waitKey(0) & 0xFF == ord('q'):
+                break
+
+
+    def calculateTP(self, roi_in, roi_den):
+        noisy_std = np.std(roi_in)
+        denoised_std = np.std(roi_den)
+
+        noisy_mean = np.mean(roi_in)
+        denoised_mean = np.mean(roi_den)
+        
+        tp = (denoised_std**2 / noisy_std**2) * np.sqrt(denoised_mean / noisy_mean)
+
+        return tp
+    
+class EP(Metric):
+    def __init__(self, img_in, img_den):
+        self.img_in_prime = img_in
+        self.img_den = img_den
+        self.rois = []
+
+    def cal():
+        pass
+
+    def calculateEP(self, roi_in_prime, roi_den):
+        delta_prime = cv2.Laplacian(roi_in_prime, cv2.CV_64F)
+        delta_den = cv2.Laplacian(roi_den, cv2.CV_64F)
+
+        
