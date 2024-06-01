@@ -46,12 +46,11 @@ class Metric:
         psnr = 10 * np.log10(255**2 / mse)
         return psnr
     
-    # def calculate_ssim(self):
-    #     """
-    #     Calculate the SSIM of the denoised image
-    #     """
-    #     ssim = cv2.SSIM(self.noisy, self.denoised)
-    #     return ssim
+    def calculate_ssim(self):
+        """
+        Calculate the SSIM of the denoised image
+        """
+        pass
     
     def calculate_cnr(self, denoised=True):
         """
@@ -109,14 +108,12 @@ class Metric:
             noisy_std = np.std(roi_noisy)
             denoised_std = np.std(roi_denoised)
 
-            noisy_mean = np.mean(roi_noisy)
-            denoised_mean = np.mean(roi_denoised)
+            noisy_mean_whole = np.mean(self.noisy)
+            denoised_mean_whole = np.mean(self.denoised)
 
-            tp = (denoised_std**2 / noisy_std**2) * np.sqrt(denoised_mean / noisy_mean)
+            tp = ((denoised_std**2) / (noisy_std**2)) * (np.sqrt(denoised_mean_whole / noisy_mean_whole))
 
             tps.append(tp)
-
-        return tps
 
         return tps
 
