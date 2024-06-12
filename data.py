@@ -11,7 +11,7 @@ class ImageDataset(Dataset):
     def __init__(self, root_dir, transform=None):
         self.root_dir = root_dir
         self.transform = transform
-        self.img_paths = glob.glob(self.root_dir + "/**/*.jpg", recursive=True)
+        self.img_paths = glob.glob(self.root_dir + "/*.jpg", recursive=True)
         self.img_paths.sort()
         print('Found {} images for training'.format(len(self.img_paths)))
 
@@ -38,10 +38,10 @@ class ImageDataset(Dataset):
         return img
     
 class ImageDataset_Val(Dataset):
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir='/data_cuong/triet/trietdao/dataset_OCT/self_fusion_1c_full_dataset/', transform=None):
         self.root_dir = root_dir
         self.transform = transform
-        self.img_paths = glob.glob(self.root_dir + "/**/*.jpg", recursive=True)
+        self.img_paths = glob.glob(self.root_dir + "/*.jpg")
         self.img_paths.sort()
         print('Found {} images for training'.format(len(self.img_paths)))
 
@@ -66,15 +66,6 @@ class ImageDataset_Val(Dataset):
         img = transformer(img)
 
         return img, self.img_paths[index]
-    
-dataset = ImageDataset('/data1tb/haiduong/n2n/dataset/train')
-from torch.utils.data import DataLoader
-train_loader = DataLoader(dataset=dataset,
-                            num_workers=8,
-                            batch_size=10,
-                            shuffle=True,
-                            pin_memory=False,
-                            drop_last=True)
 
 class OCT_Data(pl.LightningDataModule):
     def __init__(self,         
@@ -113,7 +104,3 @@ class OCT_Data(pl.LightningDataModule):
         return val_loader
     def test_dataloader(self):
         return self.val_dataloader()
-
-for img in train_loader:
-    continue
-dataset.__getitem__(0)
